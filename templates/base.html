@@ -18,6 +18,17 @@
 
     <div class="container mt-4">
         {% block content %}{% endblock %}
+
+        {% if current_user.role == "admin" %}
+          <a href="{{ url_for('admin_dashboard') }}">Admin Dashboard</a>
+          <a href="{{ url_for('sales_report') }}">Sales Reports</a>
+          
+        {% elif current_user.role == "cashier" %}
+          <a href="{{ url_for('cashier_dashboard') }}">Cashier Dashboard</a>
+          <a href="{{ url_for('process_sale') }}">Process Sale</a>
+        {% endif %}
+          <a href="{{ url_for('logout') }}">Logout</a>
+
     </div>
 
     <script>

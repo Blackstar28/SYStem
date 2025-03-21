@@ -12,6 +12,7 @@ from flask_wtf import FlaskForm
 from wtforms import StringField, FloatField, IntegerField, SubmitField
 from wtforms.validators import DataRequired
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from flask_login import LoginManager
 from wtforms import PasswordField
 import pandas as pd
 from flask import send_file
@@ -78,6 +79,10 @@ def make_celery(app):
     celery = Celery(app.import_name, backend=app.config['CELERY_RESULT_BACKEND'], broker=app.config['CELERY_BROKER_URL'])
     celery.conf.update(app.config)
     return celery
+
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = "login"  # 🔹 Redirect to login if unauthenticated
 
 # Celery Configuration
 app.config["broker_url"] = "redis://localhost:6379/0"
@@ -209,8 +214,9 @@ class SaleForm(FlaskForm):
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
-    password = db.Column(db.String(100), nullable=False)  # Store securely in production
-    role = db.Column(db.String(20), nullable=False)  # admin or cashier
+    password = db.Column(db.String(100), nullable=False)  # In production, use hashing!
+    role = db.Column(db.String(20), nullable=False)  # "admin" or "cashier"
+
 
 class Sale(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -235,7 +241,8 @@ login_manager.login_view = "login"
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    return db.session.get(User, int(user_id))  # ✅ Correct for SQLAlchemy 2.0
+
 
 # Login Form
 class LoginForm(FlaskForm):
@@ -243,19 +250,62 @@ class LoginForm(FlaskForm):
     password = PasswordField("Password", validators=[DataRequired()])
     submit = SubmitField("Login")
 
+
+
+
 # Login Route
 @app.route("/login", methods=["GET", "POST"])
 def login():
     form = LoginForm()
     if form.validate_on_submit():
-        user = User.query.filter_by(username=form.username.data, password=form.password.data).first()
-        if user:
+        user = User.query.filter_by(username=form.username.data).first()
+        
+        if user and user.password == form.password.data:  # In production, use password hashing!
             login_user(user)
-            flash("Login successful!", "success")
-            return redirect(url_for("home"))
-        else:
-            flash("Invalid credentials", "danger")
+            flash(f"Welcome, {user.username}! You are logged in as {user.role}.", "success")
+
+            # Redirect Admins & Cashiers to Different Pages
+            if user.role == "admin":
+                return redirect(url_for("admin_dashboard"))
+            elif user.role == "cashier":
+                return redirect(url_for("cashier_dashboard"))
+        
+        flash("Invalid credentials", "danger")
     return render_template("login.html", form=form)
+
+@app.route("/admin_dashboard", methods=["GET", "POST"])
+@login_required
+def admin_dashboard():
+    if current_user.role != "admin":
+        flash("Access Denied!", "danger")
+        return redirect(url_for("cashier_dashboard"))
+
+    form = ProductForm()
+
+    if form.validate_on_submit():
+        new_product = Product(
+            name=form.name.data,
+            price=form.price.data,
+            stock=form.stock.data
+        )
+        db.session.add(new_product)
+        db.session.commit()
+        flash("✅ Product added successfully!", "success")
+        return redirect(url_for("admin_dashboard"))
+
+    products = Product.query.all()
+    return render_template("admin_dashboard.html", form=form, products=products)
+
+@app.route("/cashier_dashboard")
+@login_required
+def cashier_dashboard():
+    if current_user.role != "cashier":
+        flash("Access Denied!", "danger")
+        return redirect(url_for("admin_dashboard"))
+
+    products = Product.query.all()  # ✅ Fetch all products
+    return render_template("cashier_dashboard.html", products=products)
+
 
 # Logout Route
 @app.route("/logout")
@@ -266,26 +316,18 @@ def logout():
     return redirect(url_for("login"))
 
 # Restrict Product Addition to Admins
-@app.route("/", methods=["GET", "POST"])
-@login_required
-def home():
-    if current_user.role != "admin":
-        flash("Access Denied!", "danger")
-        return redirect(url_for("login"))
-    form = ProductForm()
-    if form.validate_on_submit():
-        new_product = Product(
-            name=form.name.data,
-            price=form.price.data,
-            stock=form.stock.data
-        )
-        db.session.add(new_product)
-        db.session.commit()
-        flash("Product added successfully!", "success")
-        return redirect(url_for("home"))
 
-    products = Product.query.all()
-    return render_template("index.html", form=form, products=products)
+@app.route("/", methods=["GET", "POST"])
+def home():
+    if not current_user.is_authenticated:  # Redirect if not logged in
+        return redirect(url_for("login"))
+
+    if current_user.role == "admin":
+        return redirect(url_for("admin_dashboard"))
+    elif current_user.role == "cashier":
+        return redirect(url_for("cashier_dashboard"))
+
+    return redirect(url_for("login"))  # Fallback to login
 
 @app.route("/process_sale", methods=["GET", "POST"])
 @login_required
@@ -332,7 +374,7 @@ def view_receipt(sale_id):
 def sales_report():
     if current_user.role != "admin":
         flash("Access Denied!", "danger")
-        return redirect(url_for("home"))
+        return redirect(url_for("cashier_dashboard"))
 
     sales = Sale.query.all()
     
@@ -343,10 +385,13 @@ def sales_report():
     cost_percentage = 0.30  
     net_revenue = gross_revenue * (1 - cost_percentage)
 
+    task_id = None  # 🔹 Placeholder: Replace with actual Celery task ID when implemented
+
     return render_template("sales_report.html", 
                            sales=sales, 
                            gross_revenue=gross_revenue, 
-                           net_revenue=net_revenue)
+                           net_revenue=net_revenue,
+                           task_id=task_id)
 
 @app.route("/reset_sales", methods=["POST"])
 @login_required
@@ -467,10 +512,18 @@ def test_email():
     except Exception as e:
         return f"❌ Email failed: {str(e)}"
     
+from flask import jsonify
+
 @app.route("/task_status/<task_id>")
-def task_status(task_id):
-    task = celery.AsyncResult(task_id)
-    return jsonify({"task_id": task.id, "status": task.status, "result": task.result})
+def check_task_status(task_id):
+    if not task_id:
+        return jsonify({"status": "No task found!"}), 400  # Handle missing task
+
+    # Simulate task lookup (Replace this with Celery task lookup)
+    task_status = "Completed"  # Change this to fetch actual task status from Celery
+
+    return jsonify({"status": task_status})
+
 
 @app.route("/delete_product/<int:product_id>", methods=["POST"])
 @login_required
@@ -488,6 +541,7 @@ def delete_product(product_id):
         flash("Product not found!", "danger")
 
     return redirect(url_for("home"))
+
 
 
 if __name__ == "__main__":
