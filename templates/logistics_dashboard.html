@@ -15,33 +15,33 @@
                 <tr><th>ID</th><th>Name</th><th>Contact</th><th>Delivery Time</th></tr>
             </thead>
             <tbody>
-                {% for supplier in suppliers %}
+    {% for supplier in suppliers %}
                 <tr>
                     <td>{{ supplier.id }}</td>
                     <td>{{ supplier.name }}</td>
                     <td>{{ supplier.contact }}</td>
                     <td>{{ supplier.delivery_time }}</td>
                 </tr>
-                {% endfor %}
+    {% endfor %}
             </tbody>
         </table>
 
         <h3>Restock Requests</h3>
         <table class="table table-dark table-hover">
-            <thead>
+    <thead>
                 <tr><th>Product</th><th>Supplier</th><th>Quantity</th><th>Status</th></tr>
-            </thead>
-            <tbody>
+    </thead>
+    <tbody>
                 {% for request in restock_requests %}
-                <tr>
+        <tr>
                     <td>{{ request.product.name }}</td>
                     <td>{{ request.supplier.name }}</td>
                     <td>{{ request.quantity_requested }}</td>
                     <td>{{ request.status }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
 
         <hr>
         <a href="{{ url_for('home') }}" class="btn btn-secondary">🏠 Back to Home</a>
