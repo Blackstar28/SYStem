@@ -4,6 +4,7 @@ from flask import send_from_directory
 from reportlab.pdfgen import canvas
 from flask import Response
 from reportlab.lib.utils import ImageReader
+from reportlab.lib.pagesizes import letter
 from flask import Flask, render_template, flash, redirect, url_for
 from flask import send_file
 from flask import jsonify
@@ -24,15 +25,20 @@ from flask import render_template
 from flask_mail import Message
 from twilio.rest import Client
 from flask import jsonify
+from datetime import datetime, timedelta
+from flask_migrate import Migrate
+
+
+
 
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///pos.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.secret_key = "supersecretkey"
-
-
-
 db = SQLAlchemy(app)
+migrate = Migrate(app, db)  # ✅ Add this after initializing `db`
+
+
 
 # Email Configuration
 app.config["MAIL_SERVER"] = "smtp.gmail.com"
@@ -111,6 +117,26 @@ def send_telegram_notification(message):
     except Exception as e:
         print(f"❌ Failed to send Telegram notification: {e}")
 
+def notify_low_stock():
+    low_stock_products = Product.query.filter(Product.stock < 5).all()  # Change the threshold as needed
+
+    if low_stock_products:
+        message = "⚠️ Low Stock Alert!\n"
+        for product in low_stock_products:
+            message += f"🔻 {product.name} - Only {product.stock} left!\n"
+
+        send_telegram_message(message)  # Call function to send message
+
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+
+    response = requests.post(url, data=data)
+    if response.status_code == 200:
+        print("✅ Telegram message sent successfully!")
+    else:
+        print("❌ Failed to send Telegram message:", response.text)
+
 # Test sending a message
 send_telegram_notification("🚀 POS System: Test message!")
 
@@ -143,19 +169,11 @@ def send_sales_report():
         
         # ✅ Send WhatsApp & Telegram Notifications
         send_whatsapp_notification("📊 Your sales report has been sent via email!")
-        send_telegram_notification("📊 Your sales report has been sent via email!")
+        send_telegram_message("📊 Your sales report has been sent via email!")
 
-        return "Email & WhatsApp & Telegram notifications sent!"
+        return "Email & Notifications Sent!"
     except Exception as e:
-        return f"Email failed: {str(e)}"
-        
-        # ✅ Send WhatsApp & Telegram Notifications
-        send_whatsapp_notification("📊 Your sales report has been sent via email!")
-        send_telegram_notification("📊 Your sales report has been sent via email!")
-
-        return "Email & WhatsApp & Telegram notifications sent!"
-    except Exception as e:
-        return f"Email failed: {str(e)}"
+        return f"❌ Email Failed: {str(e)}"
 
     
     # Twilio Credentials
@@ -234,6 +252,82 @@ class BackupSale(db.Model):
     total_price = db.Column(db.Float)
     timestamp = db.Column(db.DateTime)
 
+class Supplier(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    contact = db.Column(db.String(100), nullable=False)
+    delivery_time = db.Column(db.String(50), nullable=False)  # e.g., "3 days"
+
+class RestockRequest(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    product_id = db.Column(db.Integer, db.ForeignKey("product.id"), nullable=False)
+    supplier_id = db.Column(db.Integer, db.ForeignKey("supplier.id"), nullable=False)
+    quantity_requested = db.Column(db.Integer, nullable=False)
+    status = db.Column(db.String(50), default="Pending")  # Pending, Shipped, Delivered
+    estimated_delivery = db.Column(db.DateTime, nullable=True)  # ✅ Ensure this is included!
+
+    product = db.relationship("Product", backref=db.backref("restock_requests", lazy=True))
+    supplier = db.relationship("Supplier", backref=db.backref("restock_requests", lazy=True))
+
+
+
+# Auto-restock function
+from datetime import datetime, timedelta
+
+def auto_request_restock(product):
+    supplier = Supplier.query.order_by(Supplier.delivery_time).first()  # Choose fastest supplier
+    
+    if supplier:
+        delivery_days = int(supplier.delivery_time.split()[0])  # Extract number of days
+        estimated_delivery = datetime.utcnow() + timedelta(days=delivery_days)
+
+        new_request = RestockRequest(
+            product_id=product.id,
+            supplier_id=supplier.id,
+            quantity_requested=10,  # Request 10 units
+            status="Shipped",
+            estimated_delivery=estimated_delivery
+        )
+        db.session.add(new_request)
+        db.session.commit()
+
+        message = f"🚚 Restock Ordered!\nProduct: {product.name}\nSupplier: {supplier.name}\nETA: {estimated_delivery.strftime('%Y-%m-%d')}"
+        send_telegram_message(message)  # Notify admin
+
+
+def notify_low_stock():
+    low_stock_products = Product.query.filter(Product.stock < 5).all()
+
+    if low_stock_products:
+        message = "⚠️ Low Stock Alert!\n"
+        for product in low_stock_products:
+            message += f"🔻 {product.name} - Only {product.stock} left!\n"
+            auto_request_restock(product)  # 🔹 Automatically request restock
+
+        send_telegram_message(message)
+
+#Export Logistics PDF
+@app.route("/export_logistics_pdf")
+@login_required
+def export_logistics_pdf():
+    if current_user.role != "admin":
+        flash("Access Denied!", "danger")
+        return redirect(url_for("logistics_dashboard"))
+
+    restock_requests = RestockRequest.query.all()
+    pdf_path = "logistics_report.pdf"
+    c = canvas.Canvas(pdf_path, pagesize=letter)
+    c.drawString(100, 750, "🚚 Logistics Report")
+    
+    y_position = 720
+    for request in restock_requests:
+        request_text = f"Product: {request.product.name}, Supplier: {request.supplier.name}, Qty: {request.quantity_requested}, Status: {request.status}, ETA: {request.estimated_delivery.strftime('%Y-%m-%d') if request.estimated_delivery else 'Unknown'}"
+        c.drawString(100, y_position, request_text)
+        y_position -= 20
+
+    c.save()
+    return send_file(pdf_path, as_attachment=True)
+
 # Setup Flask-Login
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -280,6 +374,7 @@ def admin_dashboard():
         flash("Access Denied!", "danger")
         return redirect(url_for("cashier_dashboard"))
 
+
     form = ProductForm()
 
     if form.validate_on_submit():
@@ -295,6 +390,7 @@ def admin_dashboard():
 
     products = Product.query.all()
     return render_template("admin_dashboard.html", form=form, products=products)
+
 
 @app.route("/cashier_dashboard")
 @login_required
@@ -329,6 +425,7 @@ def home():
 
     return redirect(url_for("login"))  # Fallback to login
 
+#Product
 @app.route("/process_sale", methods=["GET", "POST"])
 @login_required
 def process_sale():
@@ -344,6 +441,8 @@ def process_sale():
             new_sale = Sale(product_id=product.id, quantity=form.quantity.data, total_price=total_price)
             db.session.add(new_sale)
             db.session.commit()
+
+            notify_low_stock()  # 🔹 Check stock and notify if low
 
             flash(f"Sale successful! Total: ${total_price:.2f}", "success")
 
@@ -515,15 +614,9 @@ def test_email():
 from flask import jsonify
 
 @app.route("/task_status/<task_id>")
-def check_task_status(task_id):
-    if not task_id:
-        return jsonify({"status": "No task found!"}), 400  # Handle missing task
-
-    # Simulate task lookup (Replace this with Celery task lookup)
-    task_status = "Completed"  # Change this to fetch actual task status from Celery
-
-    return jsonify({"status": task_status})
-
+def task_status(task_id):
+    task = celery.AsyncResult(task_id)
+    return jsonify({"status": task.status})
 
 @app.route("/delete_product/<int:product_id>", methods=["POST"])
 @login_required
@@ -541,6 +634,35 @@ def delete_product(product_id):
         flash("Product not found!", "danger")
 
     return redirect(url_for("home"))
+
+@app.route("/logistics_dashboard")
+@login_required
+def logistics_dashboard():
+    if current_user.role != "admin":
+        flash("Access Denied!", "danger")
+        return redirect(url_for("home"))
+
+    suppliers = Supplier.query.all()
+    restock_requests = RestockRequest.query.all()
+
+    return render_template("logistics_dashboard.html", suppliers=suppliers, restock_requests=restock_requests)
+
+
+
+@app.route("/update_shipment_status/<int:request_id>", methods=["POST"])
+@login_required
+def update_shipment_status(request_id):
+    if current_user.role != "admin":
+        flash("Access Denied!", "danger")
+        return redirect(url_for("logistics_dashboard"))
+
+    request = RestockRequest.query.get(request_id)
+    if request:
+        request.status = request.form["new_status"]
+        db.session.commit()
+        flash(f"✅ Shipment status updated to {request.status}", "success")
+
+    return redirect(url_for("logistics_dashboard"))  # 🔹 Return here to avoid unreachable code
 
 
 
