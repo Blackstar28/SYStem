@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Delivery Management</title>
+</head>
+<body>
+    <h1>🚚 Delivery Management</h1>
+
+    <!-- 📌 Add New Delivery -->
+    <form action="/add_delivery" method="POST">
+        <input type="text" name="customer_name" placeholder="Customer Name" required>
+        <input type="text" name="delivery_address" placeholder="Delivery Address" required>
+        <input type="text" name="items" placeholder="Items (comma separated)" required>
+        <input type="number" name="total_price" placeholder="Total Price" step="0.01" required>
+        <button type="submit">Add Delivery</button>
+    </form>
+
+    <!-- 📌 Deliveries Table -->
+    <table border="1">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Customer</th>
+                <th>Address</th>
+                <th>Items</th>
+                <th>Total Price</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for delivery in deliveries %}
+            <tr>
+                <td>{{ delivery.id }}</td>
+                <td>{{ delivery.customer_name }}</td>
+                <td>{{ delivery.delivery_address }}</td>
+                <td>{{ delivery.items }}</td>
+                <td>${{ delivery.total_price }}</td>
+                <td>{{ delivery.status }}</td>
+                <td>
+                    <!-- Update Status -->
+                    <form action="/update_delivery_status/{{ delivery.id }}" method="POST">
+                        <select name="status">
+                            <option value="Pending">Pending</option>
+                            <option value="Out for Delivery">Out for Delivery</option>
+                            <option value="Delivered">Delivered</option>
+                        </select>
+                        <button type="submit">Update</button>
+                    </form>
+
+                    <!-- Delete Delivery -->
+                    <form action="/delete_delivery/{{ delivery.id }}" method="POST">
+                        <button type="submit">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <a href="/">🏠 Return to Home</a>
+</body>
+</html>
